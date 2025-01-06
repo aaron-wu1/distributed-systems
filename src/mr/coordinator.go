@@ -12,7 +12,18 @@ import (
 type Coordinator struct {
 	// Your definitions here.
 	nReduce int
-	ch      chan string
+	ch      chan File
+}
+
+const (
+	MAP    = iota
+	REDUCE = iota
+)
+
+type File struct {
+	id       int
+	filename string
+	taskType int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -27,7 +38,18 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 // Assign work
 func (c *Coordinator) FetchFile(args *FetchFileArgs, reply *FetchFileReply) error {
-	reply.File = <-c.ch
+	file := <-c.ch
+	reply.Filename = file.filename
+	reply.Id = file.id
+	reply.NReduce = c.nReduce
+	reply.TaskType = file.taskType
+	return nil
+}
+
+func (c *Coordinator) AddFile(args *AddFileArgs, reply *AddFileReply) error {
+	fmt.Println("AddFile to channel", args.Id, args.Filename, args.TaskType)
+	c.ch <- File{id: args.Id, filename: args.Filename, taskType: args.TaskType}
+	reply.Y = 1
 	return nil
 }
 
@@ -61,12 +83,12 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
 		nReduce: nReduce,
-		ch:      make(chan string),
+		ch:      make(chan File, 100),
 	}
-	for _, file := range files {
-		go func(file string) {
-			c.ch <- file
-		}(file)
+	for i, file := range files {
+		go func(i int, file string) {
+			c.ch <- File{id: i, filename: file, taskType: MAP}
+		}(i, file)
 	}
 
 	// Your code here.

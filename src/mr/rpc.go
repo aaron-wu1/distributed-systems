@@ -28,7 +28,20 @@ type ExampleReply struct {
 type FetchFileArgs struct {
 }
 type FetchFileReply struct {
-	File string
+	Filename string
+	Id       int
+	NReduce  int
+	TaskType int
+}
+
+type AddFileArgs struct {
+	Id       int
+	Filename string
+	TaskType int
+}
+
+type AddFileReply struct {
+	Y int
 }
 
 // Cook up a unique-ish UNIX-domain socket name
