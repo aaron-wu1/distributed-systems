@@ -10,7 +10,17 @@ import (
 	"os"
 	"path/filepath"
 	"plugin"
+	"sort"
+	"time"
 )
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -33,16 +43,20 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
-	CallExample()
-	reply := CallFetchFile()
-	fmt.Println(reply)
-	if reply.TaskType == MAP {
-		GenerateIntermediateFiles(reply.Id, reply.Filename, reply.NReduce)
+	// CallExample()
+	for {
+		reply := CallFetchFile()
+		if reply.TaskType == MAP {
+			mapTask := reply.MapTask
+			GenerateIntermediateFiles(mapTask.Id, mapTask.Filename, mapTask.NReduce)
+		} else if reply.TaskType == REDUCE {
+			reduceTask := reply.ReduceTask
+			reduceIntermediateFile(reduceTask.Id, reduceTask.IntermediateFiles)
+		} else if reply.TaskType == NONE {
+			// WAITITITI
+			time.Sleep(1 * time.Second)
+		}
 	}
-	if reply.TaskType == REDUCE {
-		// reducef()
-	}
-
 }
 
 func CallFetchFile() FetchFileReply {
@@ -57,12 +71,10 @@ func CallFetchFile() FetchFileReply {
 	// the "Coordinator.Example" tells the
 	// receiving server that we'd like to call
 	ok := call("Coordinator.FetchFile", &args, &reply)
-	fmt.Println(ok)
 	if ok {
 		// reply.Y should be 100.
-		fmt.Printf("file name %v\n", reply.Filename)
 	} else {
-		fmt.Printf("call failed!\n")
+		fmt.Printf("call fetch file failed!\n")
 	}
 	return reply
 }
@@ -75,7 +87,7 @@ func GenerateIntermediateFiles(id int, filename string, nReduce int) {
 	// pass it to Map,
 	// accumulate the intermediate Map output.
 	//
-	intermediates := [][]KeyValue{}
+	intermediateFiles := make([]string, nReduce)
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("cannot open %v", filename)
@@ -85,60 +97,143 @@ func GenerateIntermediateFiles(id int, filename string, nReduce int) {
 		log.Fatalf("cannot read %v", filename)
 	}
 	file.Close()
-	// divide into buckets
-	partSize := len(content) / nReduce
+	kva := mapf(filename, string(content))
+	// partition keys into buckets
+	partitionedKva := make([][]KeyValue, nReduce)
+	for _, v := range kva {
+		partitionKey := ihash(v.Key) % nReduce
+		partitionedKva[partitionKey] = append(partitionedKva[partitionKey], v)
+	}
+	// print(partitionedKva)
 	for i := 0; i < nReduce; i++ {
-		start := i * partSize
-		end := start + partSize
-		if i == nReduce-1 {
-			end = len(content)
-		}
-		part := content[start:end]
-		kva := mapf(fmt.Sprintf("mr-%d-%d", id, i), string(part))
-		file, err := os.Create(filepath.Base(fmt.Sprintf("mr-%d-%d", id, i)))
+		newInterfile, err := os.Create(filepath.Base(fmt.Sprintf("mr-%d-%d", id, i)))
 		if err != nil {
 			log.Fatalf("cannot create %v", fmt.Sprintf("mr-%d-%d", id, i))
 		}
-		defer file.Close()
-		enc := json.NewEncoder(file)
-		for _, kv := range kva {
-			err := enc.Encode(&kv)
-			if err != nil {
-				log.Fatalf("cannot encode %v", kv)
-			}
+		defer newInterfile.Close()
+		marshalledKva, err := json.Marshal(partitionedKva[i])
+		if err != nil {
+			log.Fatalf("cannot encode %v", partitionedKva[i])
 		}
-		AddReduceFile(id, fmt.Sprintf("mr-%d-%d", id, i))
-		intermediates = append(intermediates, kva)
+		newInterfile.Write(marshalledKva)
+		intermediateFiles[i] = fmt.Sprintf("mr-%d-%d", id, i)
 	}
+	CallIntermediateFilesReady(id, filename, intermediateFiles)
+}
 
-	fmt.Println(nReduce, len(intermediates))
-	// fmt.Println(intermediates)
+// Tell coordinator that the map task is done
+func CallMapDone(mapId int, filename string) {
+	// declare an argument structure.
+	args := SetMapTaskDoneArgs{}
+
+	args.MapId = mapId
+	args.Filename = filename
+
+	reply := SetMapTaskDoneReply{}
+
+	ok := call("Coordinator.SetMapTaskDone", &args, &reply)
+	if ok {
+	} else {
+		fmt.Printf("call map done failed!\n")
+	}
 }
 
 // Tell coordinator that the reduce file is ready
-func AddReduceFile(reduceId int, reduceFilename string) {
+func CallIntermediateFilesReady(mapid int, filename string, intermediateFiles []string) {
 
 	// declare an argument structure.
-	args := AddFileArgs{}
+	args := AddIntermediateFilesArgs{}
 
 	// fill in the argument(s).
-	args.Id = reduceId
-	args.Filename = reduceFilename
+	// args.ReduceId = reduceId
+	args.MapId = mapid
+	args.Filename = filename
+	args.IntermediateFiles = intermediateFiles
 	args.TaskType = REDUCE
 
 	// declare a reply structure.
-	reply := AddFileReply{}
-	fmt.Println("calling AddReduceFile")
+	reply := AddIntermediateFilesReply{}
 
 	// send the RPC request, wait for the reply.
 	// the "Coordinator.Example" tells the
 	// receiving server that we'd like to call
 	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.AddFile", &args, &reply)
+	ok := call("Coordinator.AddIntermediateFiles", &args, &reply)
 	if ok {
-		fmt.Printf("reply.Y %v\n", reply.Y)
 	} else {
-		fmt.Printf("call failed!\n")
+		fmt.Printf("add intermediate files call failed!\n")
+	}
+}
+
+func reduceIntermediateFile(reduceId int, intermediateFiles []string) {
+	_, reducef := loadPlugin(os.Args[1])
+	kva := []KeyValue{}
+	for _, filename := range intermediateFiles {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		content, err := io.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+		}
+		defer file.Close()
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		intermediate := []KeyValue{}
+		json.Unmarshal(content, &intermediate)
+		kva = append(kva, intermediate...)
+	}
+
+	sort.Sort(ByKey(kva))
+
+	oname := fmt.Sprintf("mr-out-%d", reduceId)
+	tempFile, err := os.CreateTemp(".", oname)
+	if err != nil {
+		fmt.Println("Error creating temp file")
+	}
+
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(tempFile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
+	os.Rename(tempFile.Name(), oname)
+	CallReduceDone(reduceId)
+}
+
+func CallReduceDone(reduceId int) {
+
+	// declare an argument structure.
+	args := SetReduceTaskDoneArgs{}
+
+	// fill in the argument(s).
+	args.ReduceId = reduceId
+
+	// declare a reply structure.
+	reply := SetReduceTaskDoneReply{}
+
+	// send the RPC request, wait for the reply.
+	// the "Coordinator.Example" tells the
+	// receiving server that we'd like to call
+	// the Example() method of struct Coordinator.
+	ok := call("Coordinator.SetReduceTaskDone", &args, &reply)
+	if ok {
+	} else {
+		fmt.Printf("call reduce done failed!\n")
 	}
 }
 

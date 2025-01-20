@@ -16,6 +16,17 @@ import (
 // and reply for an RPC.
 //
 
+type MapTask struct {
+	Id       int
+	NReduce  int
+	Filename string
+}
+
+type ReduceTask struct {
+	Id                int
+	IntermediateFiles []string
+}
+
 type ExampleArgs struct {
 	X int
 }
@@ -28,20 +39,34 @@ type ExampleReply struct {
 type FetchFileArgs struct {
 }
 type FetchFileReply struct {
-	Filename string
-	Id       int
-	NReduce  int
-	TaskType int
+	TaskType   int
+	MapTask    MapTask
+	ReduceTask ReduceTask
 }
 
-type AddFileArgs struct {
-	Id       int
-	Filename string
-	TaskType int
+type AddIntermediateFilesArgs struct {
+	MapId             int
+	Filename          string
+	IntermediateFiles []string
+	TaskType          int
 }
 
-type AddFileReply struct {
-	Y int
+type AddIntermediateFilesReply struct {
+}
+
+type SetReduceTaskDoneArgs struct {
+	ReduceId int
+}
+
+type SetReduceTaskDoneReply struct {
+}
+
+type SetMapTaskDoneArgs struct {
+	MapId    int
+	Filename string
+}
+
+type SetMapTaskDoneReply struct {
 }
 
 // Cook up a unique-ish UNIX-domain socket name
